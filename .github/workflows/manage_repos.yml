@@ -1,0 +1,72 @@
+name: Manage and Analyze Repositories
+
+on:
+  schedule:
+    - cron: '0 2 * * 1'  # Runs every Monday at 2:00 AM UTC
+  workflow_dispatch:  # Allows manual triggering
+
+jobs:
+  analyze_repositories:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Main Repository
+      uses: actions/checkout@v3
+
+    - name: Set Up GitHub CLI
+      uses: einaregilsson/gh-cli@v1
+      with:
+        version: latest
+
+    - name: Install jq
+      run: sudo apt-get install -y jq
+
+    - name: Generate Repository Report
+      env:
+        GH_USER: allyelvis
+        REPORT_FILE: repo_report.txt
+      run: |
+        echo "Repository Report for $GH_USER" > $REPORT_FILE
+        echo "Generated on $(date)" >> $REPORT_FILE
+        echo "------------------------------------------" >> $REPORT_FILE
+
+        echo "Fetching all repositories for $GH_USER..."
+        repos=$(gh repo list $GH_USER --json name,visibility,updatedAt,url --jq '.[]')
+
+        analyze_repo() {
+          local repo_name=$1
+          echo "Analyzing repository: $repo_name"
+
+          echo "Repository: $repo_name" >> $REPORT_FILE
+          echo "URL: $(echo "$repo" | jq -r '.url')" >> $REPORT_FILE
+          echo "Visibility: $(echo "$repo" | jq -r '.visibility')" >> $REPORT_FILE
+          echo "Last Updated: $(echo "$repo" | jq -r '.updatedAt')" >> $REPORT_FILE
+
+          issues=$(gh issue list --repo "$GH_USER/$repo_name" --state open --json title --jq 'length')
+          echo "Open Issues: $issues" >> $REPORT_FILE
+
+          prs=$(gh pr list --repo "$GH_USER/$repo_name" --state open --json title --jq 'length')
+          echo "Open Pull Requests: $prs" >> $REPORT_FILE
+
+          echo "Checking dependencies with Dependabot..." >> $REPORT_FILE
+          dependabot_alerts=$(gh api -H "Accept: application/vnd.github+json" /repos/$GH_USER/$repo_name/dependabot/alerts | jq '.[].dependency.package.name' 2>/dev/null || echo "No dependencies or Dependabot not enabled")
+          echo "Dependabot Alerts: $dependabot_alerts" >> $REPORT_FILE
+
+          echo "Running CodeQL analysis..." >> $REPORT_FILE
+          gh workflow run CodeQL --repo "$GH_USER/$repo_name" || echo "CodeQL workflow not configured for $repo_name" >> $REPORT_FILE
+          echo "------------------------------------------" >> $REPORT_FILE
+        }
+
+        for repo in $(echo "$repos" | jq -c '.'); do
+          repo_name=$(echo "$repo" | jq -r '.name')
+          analyze_repo "$repo_name"
+        done
+
+    - name: Commit and Push Report
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        
+        git add $REPORT_FILE
+        git commit -m "Update repository report on $(date)"
+        git push origin main
